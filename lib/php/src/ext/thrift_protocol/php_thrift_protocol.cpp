@@ -836,7 +836,7 @@ void binary_serialize(int8_t thrift_typeID, PHPOutputTransport& transport, zval*
       HashTable* ht = Z_ARRVAL_P(*value);
       zval* val_ptr;
 
-      zend_hash_str_find(fieldspec, ZEND_STRL("etype"));
+      val_ptr = zend_hash_str_find(fieldspec, ZEND_STRL("etype"));
       if (Z_TYPE_P(val_ptr) != IS_LONG) convert_to_long(val_ptr);
       uint8_t valtype = Z_LVAL_P(val_ptr);
       transport.writeI8(valtype);
@@ -921,6 +921,7 @@ void binary_serialize_spec(zval* zthis, PHPOutputTransport& transport, HashTable
 // 6 params: $transport $method_name $ttype $request_struct $seqID $strict_write
 PHP_FUNCTION(thrift_protocol_write_binary) {
   int argc = ZEND_NUM_ARGS();
+  zval protocol, request_struct;
   if (argc < 6) {
     WRONG_PARAM_COUNT;
   }
@@ -949,22 +950,26 @@ PHP_FUNCTION(thrift_protocol_write_binary) {
 
   try {
     PHPOutputTransport transport(&args[0]);
-    zval *protocol = &args[0];
+    ZVAL_DUP(&protocol,  &args[0]);
+
     const char* method_name = Z_STRVAL(args[1]);
+
     convert_to_long(&args[2]);
+
     int32_t msgtype = Z_LVAL(args[2]);
-    zval* request_struct = &args[3];
+
+    ZVAL_DUP(&request_struct, &args[3]);
+
     convert_to_long(&args[4]);
     int32_t seqID = Z_LVAL(args[4]);
-    convert_to_boolean(&args[5]);
     efree(args);
     args = NULL;
-    protocol_writeMessageBegin(protocol, method_name, msgtype, seqID);
-    zval* spec = zend_read_static_property(Z_OBJCE_P(request_struct TSRMLS_CC), "_TSPEC", 6, false TSRMLS_CC);
+    protocol_writeMessageBegin(&protocol, method_name, msgtype, seqID);
+    zval* spec = zend_read_static_property(Z_OBJCE_P(&request_struct TSRMLS_CC), "_TSPEC", 6, false TSRMLS_CC);
     if (Z_TYPE_P(spec) != IS_ARRAY) {
         throw_tprotocolexception((char *) "Attempt to send non-Thrift object", INVALID_DATA);
     }
-    binary_serialize_spec(request_struct, transport, Z_ARRVAL_P(spec));
+    binary_serialize_spec(&request_struct, transport, Z_ARRVAL_P(spec));
     transport.flush();
   } catch (const PHPExceptionWrapper& ex) {
     zend_throw_exception_object(ex TSRMLS_CC);
