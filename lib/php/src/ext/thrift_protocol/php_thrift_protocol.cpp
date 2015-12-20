@@ -117,14 +117,15 @@ ZEND_GET_MODULE(thrift_protocol)
 
 class PHPExceptionWrapper : public std::exception {
 public:
-  PHPExceptionWrapper(zval* _ex) throw() : ex(_ex) {
+  PHPExceptionWrapper(zval* _ex) {
+    ZVAL_DUP(&ex, _ex);
     snprintf(_what, 40, "PHP exception zval=%p", ex);
   }
   const char* what() const throw() { return _what; }
   ~PHPExceptionWrapper() throw() {}
-  operator zval*() const throw() { return const_cast<zval*>(ex); } // Zend API doesn't do 'const'...
+  operator zval*() const throw() { return const_cast<zval*>(&ex); }
 protected:
-  zval* ex;
+  zval ex;
   char _what[40];
 } ;
 
@@ -233,8 +234,7 @@ protected:
     ZVAL_NULL(&ret);
     zval flushfn;
     ZVAL_STRING(&flushfn, "flush");
-    TSRMLS_FETCH();
-    call_user_function(EG(function_table), &t, &flushfn, &ret, 0, NULL TSRMLS_CC);
+    call_user_function(EG(function_table), &t, &flushfn, &ret, 0, NULL);
     zval_dtor(&ret);
   }
   void directWrite(const char* data, size_t len) {
@@ -247,14 +247,14 @@ protected:
     ZVAL_STRINGL(&args[0], newbuf, len);
     zval ret;
     ZVAL_NULL(&ret);
-    call_user_function(EG(function_table), &t, &writefn, &ret, 1, args TSRMLS_CC);
+    call_user_function(EG(function_table), &t, &writefn, &ret, 1, args);
     zval_ptr_dtor(args);
     zval_dtor(&ret);
     if (EG(exception)) {
-      // TODO Sean-Der
-      //zval* ex = EG(exception);
-      //EG(exception) = NULL;
-      //throw PHPExceptionWrapper(ex);
+      zval ex;
+      ZVAL_OBJ(&ex, EG(exception));
+      EG(exception) = NULL;
+      throw PHPExceptionWrapper(&ex);
     }
   }
 };
@@ -283,7 +283,7 @@ public:
 
       zval ret;
       ZVAL_NULL(&ret);
-      call_user_function(EG(function_table), &t, &putbackfn, &ret, 1, args TSRMLS_CC);
+      call_user_function(EG(function_table), &t, &putbackfn, &ret, 1, args);
       zval_ptr_dtor(args);
       zval_dtor(&ret);
     }
@@ -352,20 +352,18 @@ protected:
     zval args[1];
     ZVAL_LONG(&args[0], buffer_size);
 
-    TSRMLS_FETCH();
-
     zval funcname;
     ZVAL_STRING(&funcname, "read");
 
-    call_user_function(EG(function_table), &t, &funcname, &retval, 1, args TSRMLS_CC);
+    call_user_function(EG(function_table), &t, &funcname, &retval, 1, args);
     zval_ptr_dtor(args);
 
     if (EG(exception)) {
-      // TODO Sean-Der
-      //zval_dtor(&retval);
-      //zend_object *ex = EG(exception);
-      //EG(exception) = NULL;
-      //throw PHPExceptionWrapper(ex);
+      zval ex;
+      ZVAL_OBJ(&ex, EG(exception));
+      zval_dtor(&retval);
+      EG(exception) = NULL;
+      throw PHPExceptionWrapper(&ex);
     }
 
     buffer_used = Z_STRLEN(retval);
@@ -391,19 +389,17 @@ void createObject(char* obj_typename, zval* return_value, int nargs = 0, zval* a
 
   zend_string_release(class_name);
   if (! ce) {
-    php_error_docref(NULL TSRMLS_CC, E_ERROR, "Class %s does not exist", obj_typename);
+    php_error_docref(NULL, E_ERROR, "Class %s does not exist", obj_typename);
     RETURN_NULL();
   }
 
   object_and_properties_init(return_value, ce, NULL);
   zval ctor_rv;
-  zend_call_method(return_value, ce, &ce->constructor, NULL, 0, &ctor_rv, nargs, arg1, arg2 TSRMLS_CC);
+  zend_call_method(return_value, ce, &ce->constructor, NULL, 0, &ctor_rv, nargs, arg1, arg2);
   zval_ptr_dtor(&ctor_rv);
 }
 
 void throw_tprotocolexception(char* what, long errorcode) {
-  TSRMLS_FETCH();
-
   zval zwhat, zerrorcode;
 
   ZVAL_STRING(&zwhat, what);
@@ -417,8 +413,8 @@ void throw_tprotocolexception(char* what, long errorcode) {
 }
 
 // Sets EG(exception), call this and then RETURN_NULL();
-void throw_zend_exception_from_std_exception(const std::exception& ex TSRMLS_DC) {
-  zend_throw_exception(zend_exception_get_default(TSRMLS_C), const_cast<char*>(ex.what()), 0 TSRMLS_CC);
+void throw_zend_exception_from_std_exception(const std::exception& ex) {
+  zend_throw_exception(zend_exception_get_default(), const_cast<char*>(ex.what()), 0);
 }
 
 
@@ -444,7 +440,7 @@ void binary_deserialize(int8_t thrift_typeID, PHPInputTransport& transport, zval
         skip_element(T_STRUCT, transport);
         RETURN_NULL();
       }
-      zval* spec = zend_read_static_property(Z_OBJCE_P(return_value TSRMLS_CC), "_TSPEC", 6, false TSRMLS_CC);
+      zval* spec = zend_read_static_property(Z_OBJCE_P(return_value), "_TSPEC", 6, false);
       if (Z_TYPE_P(spec) != IS_ARRAY) {
         char errbuf[128];
         snprintf(errbuf, 128, "spec for %s is wrong type: %d\n", structType, Z_TYPE_P(spec));
@@ -745,11 +741,10 @@ void binary_serialize(int8_t thrift_typeID, PHPOutputTransport& transport, zval*
     case T_VOID:
       return;
     case T_STRUCT: {
-      TSRMLS_FETCH();
       if (Z_TYPE_P(*value) != IS_OBJECT) {
         throw_tprotocolexception((char *)"Attempt to send non-object type as a T_STRUCT", INVALID_DATA);
       }
-      zval* spec = zend_read_static_property(Z_OBJCE_P(*value), "_TSPEC", 6, false TSRMLS_CC);
+      zval* spec = zend_read_static_property(Z_OBJCE_P(*value), "_TSPEC", 6, false);
       if (Z_TYPE_P(spec) != IS_ARRAY) {
         throw_tprotocolexception((char *) "Attempt to send non-Thrift object as a T_STRUCT", INVALID_DATA);
       }
@@ -884,8 +879,7 @@ void binary_serialize_spec(zval* zthis, PHPOutputTransport& transport, HashTable
   HashPosition key_ptr;
   zval *val_ptr;
 
-  TSRMLS_FETCH();
-  zend_class_entry* ce = Z_OBJCE_P(zthis TSRMLS_CC);
+  zend_class_entry* ce = Z_OBJCE_P(zthis);
 
   for (zend_hash_internal_pointer_reset_ex(spec, &key_ptr);
       (val_ptr = zend_hash_get_current_data_ex(spec, &key_ptr)) != NULL;
@@ -930,19 +924,19 @@ PHP_FUNCTION(thrift_protocol_write_binary) {
   zend_get_parameters_array_ex(argc, args);
 
   if (Z_TYPE(args[0]) != IS_OBJECT) {
-    php_error_docref(NULL TSRMLS_CC, E_ERROR, "1st parameter is not an object (transport)");
+    php_error_docref(NULL, E_ERROR, "1st parameter is not an object (transport)");
     efree(args);
     RETURN_NULL();
   }
 
   if (Z_TYPE(args[1]) != IS_STRING) {
-    php_error_docref(NULL TSRMLS_CC, E_ERROR, "2nd parameter is not a string (method name)");
+    php_error_docref(NULL, E_ERROR, "2nd parameter is not a string (method name)");
     efree(args);
     RETURN_NULL();
   }
 
   if (Z_TYPE(args[3]) != IS_OBJECT) {
-    php_error_docref(NULL TSRMLS_CC, E_ERROR, "4th parameter is not an object (request struct)");
+    php_error_docref(NULL, E_ERROR, "4th parameter is not an object (request struct)");
     efree(args);
     RETURN_NULL();
   }
@@ -965,17 +959,17 @@ PHP_FUNCTION(thrift_protocol_write_binary) {
     efree(args);
     args = NULL;
     protocol_writeMessageBegin(&protocol, method_name, msgtype, seqID);
-    zval* spec = zend_read_static_property(Z_OBJCE_P(&request_struct TSRMLS_CC), "_TSPEC", 6, false TSRMLS_CC);
+    zval* spec = zend_read_static_property(Z_OBJCE_P(&request_struct), "_TSPEC", 6, false);
     if (Z_TYPE_P(spec) != IS_ARRAY) {
         throw_tprotocolexception((char *) "Attempt to send non-Thrift object", INVALID_DATA);
     }
     binary_serialize_spec(&request_struct, transport, Z_ARRVAL_P(spec));
     transport.flush();
-  } catch (const PHPExceptionWrapper& ex) {
-    zend_throw_exception_object(ex TSRMLS_CC);
+  } catch (const PHPExceptionWrapper &ex) {
+    zend_throw_exception_object(ex);
     RETURN_NULL();
-  } catch (const std::exception& ex) {
-    throw_zend_exception_from_std_exception(ex TSRMLS_CC);
+  } catch (const std::exception &ex) {
+    throw_zend_exception_from_std_exception(ex);
     RETURN_NULL();
   }
 }
@@ -992,13 +986,13 @@ PHP_FUNCTION(thrift_protocol_read_binary) {
   zend_get_parameters_array_ex(argc, args);
 
   if (Z_TYPE(args[0]) != IS_OBJECT) {
-    php_error_docref(NULL TSRMLS_CC, E_ERROR, "1st parameter is not an object (transport)");
+    php_error_docref(NULL, E_ERROR, "1st parameter is not an object (transport)");
     efree(args);
     RETURN_NULL();
   }
 
   if (Z_TYPE(args[1]) != IS_STRING) {
-    php_error_docref(NULL TSRMLS_CC, E_ERROR, "2nd parameter is not a string (typename of expected response struct)");
+    php_error_docref(NULL, E_ERROR, "2nd parameter is not a string (typename of expected response struct)");
     efree(args);
     RETURN_NULL();
   }
@@ -1038,19 +1032,19 @@ PHP_FUNCTION(thrift_protocol_read_binary) {
     if (messageType == T_EXCEPTION) {
       zval ex;
       createObject((char *) "\\Thrift\\Exception\\TApplicationException", &ex);
-      zval* spec = zend_read_static_property(Z_OBJCE_P(&ex), "_TSPEC", 6, false TSRMLS_CC);
+      zval* spec = zend_read_static_property(Z_OBJCE_P(&ex), "_TSPEC", 6, false);
       binary_deserialize_spec(&ex, transport, Z_ARRVAL_P(spec));
       throw PHPExceptionWrapper(&ex);
     }
 
     createObject(obj_typename, return_value);
-    zval* spec = zend_read_static_property(Z_OBJCE_P(return_value TSRMLS_CC), "_TSPEC", 6, false TSRMLS_CC);
+    zval* spec = zend_read_static_property(Z_OBJCE_P(return_value), "_TSPEC", 6, false);
     binary_deserialize_spec(return_value, transport, Z_ARRVAL_P(spec));
-  } catch (const PHPExceptionWrapper& ex) {
-    zend_throw_exception_object(ex TSRMLS_CC);
+  } catch (const PHPExceptionWrapper &ex) {
+    zend_throw_exception_object(ex);
     RETURN_NULL();
-  } catch (const std::exception& ex) {
-    throw_zend_exception_from_std_exception(ex TSRMLS_CC);
+  } catch (const std::exception &ex) {
+    throw_zend_exception_from_std_exception(ex);
     RETURN_NULL();
   }
 }
