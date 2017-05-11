@@ -406,7 +406,7 @@ void throw_tprotocolexception(char* what, long errorcode) {
   ZVAL_LONG(&zerrorcode, errorcode);
 
   zval ex;
-  createObject((char *) "\\Thrift\\Exception\\TProtocolException", &ex, 2, &zwhat, &zerrorcode);
+  createObject((char *) "TProtocolException", &ex, 2, &zwhat, &zerrorcode);
   zval_ptr_dtor(&zwhat);
   zval_ptr_dtor(&zerrorcode);
   throw PHPExceptionWrapper(&ex);
@@ -1031,7 +1031,7 @@ PHP_FUNCTION(thrift_protocol_read_binary) {
 
     if (messageType == T_EXCEPTION) {
       zval ex;
-      createObject((char *) "\\Thrift\\Exception\\TApplicationException", &ex);
+      createObject((char *) "TApplicationException", &ex);
       zval* spec = zend_read_static_property(Z_OBJCE_P(&ex), "_TSPEC", 6, false);
       binary_deserialize_spec(&ex, transport, Z_ARRVAL_P(spec));
       throw PHPExceptionWrapper(&ex);
